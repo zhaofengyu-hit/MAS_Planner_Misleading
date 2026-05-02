@@ -29,14 +29,31 @@
 
 ## 1. Environment Setup
 
+> Tested on **WSL2 (Ubuntu 24.04)**.
+
 ### 1.1 Prerequisites
 
-- Python **3.11.x**
-- Node.js (for Playwright MCP server)
+**Python 3.11** — the virtual environment was built with CPython 3.11.14 via [uv](https://github.com/astral-sh/uv). Using uv is recommended:
+
+```bash
+# Install uv
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install Python 3.11.14
+uv python install 3.11.14
+```
+
+Any other Python 3.11 installation (apt, conda, pyenv) also works as long as `python3.11` is available on `PATH`.
+
+**Node.js 18** — required only for running MAS execution (Playwright MCP). Tested with v18.19.1 (the default version shipped with Ubuntu 24.04):
+
+```bash
+sudo apt install nodejs npm
+```
 
 ### 1.2 Restore and Fix the Virtual Environment
 
-The virtual environment is stored as a split compressed archive under `env/`.
+The virtual environment is stored as a split compressed archive under `env/`. No additional `pip install` is needed after extraction.
 
 ```bash
 # Merge parts, extract, then clean up
@@ -56,10 +73,13 @@ source .venv/bin/activate
 
 ### 1.4 Configuration Files
 
-Copy the backup templates and fill in your API keys:
+**Getting API keys:** Most API keys in this project come from [Alibaba Bailian](https://bailian.console.aliyun.com/). Create an account, apply for an API key, and top up your balance to get started. The exception is `RAGFLOW_API`, which comes from your self-hosted RAGFlow instance (see Section 2.2).
+
+Copy the backup templates and fill in your keys:
 
 ```bash
 cp config.yaml.backup config.yaml
+cp Company/Defense/config/config.yaml.backup Company/Defense/config/config.yaml
 cp .env.backup .env
 cp playwright_config.json.backup playwright_config.json
 ```
@@ -71,6 +91,16 @@ llm:
   model: "qwen3-max"
   base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
   temperature: 0.7
+  max_tokens: 10000
+```
+
+**`Company/Defense/config/config.yaml`** — LLM used by the defense module (DescriptionNormalizer):
+```yaml
+llm:
+  api_key: <ali-bailian-api-key>
+  model: "qwen3-max"
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  temperature: 0.2
   max_tokens: 10000
 ```
 
@@ -98,7 +128,7 @@ VIDEO_LLM_PROTOCOL=dashscope
 RAGFLOW_API=<ragflow-api-key>
 ```
 
-**`playwright_config.json`** — Update `outputDir` to your project root:
+**`playwright_config.json`** — Update `outputDir` to the absolute path of your project root:
 ```json
 {
   "server": { "port": 61002 },
@@ -114,21 +144,61 @@ RAGFLOW_API=<ragflow-api-key>
 }
 ```
 
+**`test/AttackTest/ExecutionTest.py` and `test/AttackTest/PlannerTest.py`** — Replace the API key placeholders directly in the source files:
+
+| Placeholder | Source |
+|---|---|
+| `<ali_bailian_api_key>` | Alibaba Bailian |
+| `<deepseek_api_key>` | Alibaba Bailian (recommended — DeepSeek models are available on Bailian; alternatively use [DeepSeek Platform](https://platform.deepseek.com/) directly) |
+| `<gpt_api_key>` | [OpenAI Platform](https://platform.openai.com/) |
+
 ---
 
 ## 2. Docker Services
 
 ### 2.1 Core Services (PostgreSQL, etc.)
 
-> TODO: document the docker-compose file and how to start it.
+Create the shared Docker network first (only needed once), then start the services:
 
 ```bash
-docker compose -f <compose-file> up -d
+docker network create mas
+docker compose -f Docker/docker-compose.yml up -d
 ```
+
+This starts three containers: a PostgreSQL database, an Adminer web UI (port 61080), and a Postgres MCP server (port 61001).
 
 ### 2.2 RAGFlow
 
-> TODO: document RAGFlow container setup and how to obtain the API key for `.env`.
+Clone the RAGFlow repository and edit its `docker-compose.yml` to join the `mas` network:
+
+```bash
+git clone https://github.com/infiniflow/ragflow.git
+cd ragflow
+```
+
+In `docker-compose.yml`, add the `mas` network as external and attach it to each service:
+
+```yaml
+# At the top level:
+networks:
+  mas:
+    external: true
+
+# Under each service:
+services:
+  <service_name>:
+    networks:
+      - mas
+      # ... other existing networks
+```
+
+Then start RAGFlow:
+
+```bash
+docker compose -f docker-compose.yml up -d
+```
+
+Once running, open the RAGFlow web UI at `http://localhost:80`, create an account, and generate an API key. Fill it in as `RAGFLOW_API` in `.env`. RAGFlow's API service runs on port 9380.
 
 ---
 
@@ -136,78 +206,121 @@ docker compose -f <compose-file> up -d
 
 Playwright is required for the web browsing capability of the MAS execution agent. This step is only needed when running full MAS execution (Section 4.1).
 
-### 3.1 Install Playwright and Browser
+### 3.1 Start the Playwright MCP Server
+
+The MCP server must be running before executing MAS. Keep it running in a separate terminal throughout the experiment. The browser will be downloaded automatically on first run.
+
+Run from the `tmp/browser_wp/` directory (create it first if it doesn't exist):
 
 ```bash
-pip install playwright
-playwright install chromium
+mkdir -p tmp/browser_wp
+cd tmp/browser_wp
+npx --yes @playwright/mcp@0.0.68 --config ../../playwright_config.json
 ```
-
-### 3.2 Install Playwright MCP
-
-```bash
-npm install -g @playwright/mcp
-```
-
-### 3.3 Start the Playwright MCP Server
-
-The MCP server must be running before executing MAS. Start it with the provided config:
-
-```bash
-npx @playwright/mcp --config playwright_config.json
-```
-
-Keep this process running in a separate terminal throughout the experiment.
 
 ---
 
 ## 4. Running Experiments
 
-### 4.1 Run MAS Execution
+The GAIA benchmark dataset is included in `Benchmark/GAIA/`. It can also be downloaded from the [official GAIA repository](https://huggingface.co/datasets/gaia-benchmark/GAIA).
 
-Runs the full multi-agent system on the GAIA benchmark and records results.
+The agent descriptions used in all experiments are stored in `scripts/tested_descs.json`. Each key is a variant name and the value is the description string injected into the PostgresManager agent.
 
+To read a description for use in a command:
 ```bash
-python test/AttackTest/ExecutionTest.py \
-    --provided_desc "<agent description string>" \
-    --content_dir "<output subdirectory name>" \
-    [--use_defense]
+DESC=$(python3 -c "import json; print(json.load(open('scripts/tested_descs.json'))['baseline'])")
 ```
-
-- `--provided_desc`: Description injected into the PostgresManager agent. Use a benign description for baseline, or a crafted one for attack variants.
-- `--content_dir`: Output directory name under `tmp/logs/` (e.g. `baseline`, `over_fragmentation`).
-- `--use_defense`: Enable DescriptionNormalizer defense on the provided description.
-
-Results are saved to:
-- `tmp/logs/<content_dir>/task_cache.json` — answers and judgements per task
-- `tmp/logs/<content_dir>/<task_id>_llm_call_log.json` — per-task LLM call traces
 
 To limit execution to a subset of tasks (e.g. for testing), edit `utils/task_filter.py`:
 ```python
-TASK_IDS: list[str] | None = ["task-id-1", "task-id-2", ...]  # set to None to run all
+TASK_IDS: list[str] | None = ["task-id-1", ...]  # set to None to run all
+```
+
+### 4.1 Run MAS Execution
+
+Requires Playwright MCP server and Docker services to be running. Results are saved to `tmp/logs/<content_dir>/`.
+
+```bash
+python test/AttackTest/ExecutionTest.py \
+    --provided_desc "<desc>" \
+    --content_dir "<variant_name>" \
+    [--use_defense]
+```
+
+The following commands reproduce all 13 execution variants:
+
+```bash
+# Main experiments (no defense)
+python test/AttackTest/ExecutionTest.py --provided_desc "$(python3 -c "import json; print(json.load(open('scripts/tested_descs.json'))['baseline'])")" --content_dir baseline
+python test/AttackTest/ExecutionTest.py --provided_desc "$(python3 -c "import json; print(json.load(open('scripts/tested_descs.json'))['over_fragmentation'])")" --content_dir over_fragmentation
+python test/AttackTest/ExecutionTest.py --provided_desc "$(python3 -c "import json; print(json.load(open('scripts/tested_descs.json'))['under_decomposition'])")" --content_dir under_decomposition
+python test/AttackTest/ExecutionTest.py --provided_desc "$(python3 -c "import json; print(json.load(open('scripts/tested_descs.json'))['dependency_disruption'])")" --content_dir dependency_disruption
+python test/AttackTest/ExecutionTest.py --provided_desc "$(python3 -c "import json; print(json.load(open('scripts/tested_descs.json'))['over_assignment'])")" --content_dir over_assignment
+python test/AttackTest/ExecutionTest.py --provided_desc "$(python3 -c "import json; print(json.load(open('scripts/tested_descs.json'))['agent_exclusion'])")" --content_dir agent_exclusion
+python test/AttackTest/ExecutionTest.py --provided_desc "$(python3 -c "import json; print(json.load(open('scripts/tested_descs.json'))['intermediate_output_suppression'])")" --content_dir intermediate_output_suppression
+python test/AttackTest/ExecutionTest.py --provided_desc "$(python3 -c "import json; print(json.load(open('scripts/tested_descs.json'))['overworking'])")" --content_dir overworking
+python test/AttackTest/ExecutionTest.py --provided_desc "$(python3 -c "import json; print(json.load(open('scripts/tested_descs.json'))['planner_prior_misguidance'])")" --content_dir planner_prior_misguidance
+
+# With defense
+python test/AttackTest/ExecutionTest.py --provided_desc "$(python3 -c "import json; print(json.load(open('scripts/tested_descs.json'))['baseline'])")" --content_dir baseline_with_defense --use_defense
+python test/AttackTest/ExecutionTest.py --provided_desc "$(python3 -c "import json; print(json.load(open('scripts/tested_descs.json'))['over_fragmentation'])")" --content_dir over_fragmentation_with_defense --use_defense
+python test/AttackTest/ExecutionTest.py --provided_desc "$(python3 -c "import json; print(json.load(open('scripts/tested_descs.json'))['agent_exclusion'])")" --content_dir agent_exclusion_with_defense --use_defense
+python test/AttackTest/ExecutionTest.py --provided_desc "$(python3 -c "import json; print(json.load(open('scripts/tested_descs.json'))['overworking'])")" --content_dir overworking_with_defense --use_defense
 ```
 
 ### 4.2 Fetch Plans Only
 
-Runs only the planning stage to collect structured task plans from the Planner agent. Does not require Playwright or Docker.
+Does not require Playwright or Docker. Results are saved to `tmp/plans/<name>.json`. Supports checkpoint resume.
 
 ```bash
 python scripts/fetch_plans.py \
     --name <variant_name> \
-    --desc "<agent description string>" \
+    --desc "<desc>" \
     [--planner <planner_key>] \
     [--use_defense] \
     [--replace_worker_descs] \
     [--overwrite]
 ```
 
-- `--name`: Output file name, saved to `tmp/plans/<name>.json`.
-- `--planner`: LLM to use as the planner. Options: `deepseek_ali` (default), `deepseek`, `gpt`, `gpt_mini`, `kimi`, `qwen`.
-- `--use_defense`: Apply DescriptionNormalizer to the provided description.
-- `--replace_worker_descs`: Replace non-DB worker agent descriptions with real-world descriptions from `scripts/agent_descriptions_replace.json`.
-- `--overwrite`: Re-run even if the output file already exists.
+- `--planner`: `deepseek_ali` (default), `deepseek`, `gpt`, `gpt_mini`, `kimi`, `qwen`
+- `--replace_worker_descs`: Replace non-DB worker descriptions with real-world ones from `scripts/agent_descriptions_replace.json`
 
-Supports checkpoint resume: interrupted runs automatically continue from where they left off.
+**Group 1 — Main experiments** (same 13 variants as execution, default planner):
+
+```bash
+# No defense (9 variants) — same descriptions as execution commands above, e.g.:
+python scripts/fetch_plans.py --name baseline --desc "$(python3 -c "import json; print(json.load(open('scripts/tested_descs.json'))['baseline'])")"
+python scripts/fetch_plans.py --name over_fragmentation --desc "$(python3 -c "import json; print(json.load(open('scripts/tested_descs.json'))['over_fragmentation'])")"
+# ... (repeat for all 9 attack variants)
+
+# With defense (4 variants):
+python scripts/fetch_plans.py --name baseline_with_defense --desc "$(python3 -c "import json; print(json.load(open('scripts/tested_descs.json'))['baseline'])")" --use_defense
+python scripts/fetch_plans.py --name over_fragmentation_with_defense --desc "$(python3 -c "import json; print(json.load(open('scripts/tested_descs.json'))['over_fragmentation'])")" --use_defense
+python scripts/fetch_plans.py --name agent_exclusion_with_defense --desc "$(python3 -c "import json; print(json.load(open('scripts/tested_descs.json'))['agent_exclusion'])")" --use_defense
+python scripts/fetch_plans.py --name overworking_with_defense --desc "$(python3 -c "import json; print(json.load(open('scripts/tested_descs.json'))['overworking'])")" --use_defense
+```
+
+**Group 2 — LLM comparison** (baseline, over_fragmentation, agent_exclusion, overworking × planners gpt/gpt_mini/kimi/qwen, 16 variants total):
+
+Output names follow the pattern `<attack>_<planner_suffix>` where `gpt` → `gpt_5`, `gpt_mini` → `gpt_5_mini`. Example:
+
+```bash
+python scripts/fetch_plans.py --name baseline_gpt_5 \
+    --desc "$(python3 -c "import json; print(json.load(open('scripts/tested_descs.json'))['baseline'])")" \
+    --planner gpt
+```
+
+**Group 3 — Real agent descriptions** (same 4 attacks, with and without defense, 8 variants total). Uses `--replace_worker_descs` to substitute non-DB agent descriptions with real-world ones. Example:
+
+```bash
+python scripts/fetch_plans.py --name baseline_replace_desc \
+    --desc "$(python3 -c "import json; print(json.load(open('scripts/tested_descs.json'))['baseline'])")" \
+    --replace_worker_descs
+
+python scripts/fetch_plans.py --name baseline_replace_desc_with_defense \
+    --desc "$(python3 -c "import json; print(json.load(open('scripts/tested_descs.json'))['baseline'])")" \
+    --replace_worker_descs --use_defense
+```
 
 ---
 
@@ -215,13 +328,11 @@ Supports checkpoint resume: interrupted runs automatically continue from where t
 
 ### 5.1 From Pre-computed Data (Recommended)
 
-If `tmp/plans/` already contains pre-computed plan metrics and execution metrics (as provided in the release), seed the checkpoints first to skip LLM-based recomputation:
+The release includes pre-computed checkpoints under `tmp/export/table_data/`. Copy them to skip all LLM-based recomputation:
 
 ```bash
-python scripts/seed_checkpoints.py
+cp -r tmp/export/table_data tmp/table_data
 ```
-
-This writes all three checkpoint files to `tmp/table_data/` and requires no API calls.
 
 ### 5.2 Full Recomputation
 
