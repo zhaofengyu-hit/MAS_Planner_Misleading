@@ -27,6 +27,23 @@
 
 ---
 
+## Getting Started
+
+This repository uses **Git LFS** for large files (`env/` and `analysis/data/agents.db`). Make sure Git LFS is installed before cloning:
+
+```bash
+# Install git-lfs (Ubuntu)
+sudo apt install git-lfs
+git lfs install
+
+# Clone and download LFS files
+git clone https://github.com/zhaofengyu-hit/MAS_Planner_Misleading.git
+cd MAS_Planner_Misleading
+git lfs pull
+```
+
+---
+
 ## 1. Environment Setup
 
 > Tested on **WSL2 (Ubuntu 24.04)**.
