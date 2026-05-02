@@ -35,10 +35,11 @@ This repository uses **Git LFS** for large files (`env/` and `analysis/data/agen
 # Install git-lfs (Ubuntu)
 sudo apt install git-lfs
 git lfs install
+```
 
-# Clone and download LFS files
-git clone https://github.com/zhaofengyu-hit/MAS_Planner_Misleading.git
-cd MAS_Planner_Misleading
+Then clone this repository and pull LFS files:
+
+```bash
 git lfs pull
 ```
 
