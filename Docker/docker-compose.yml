@@ -1,0 +1,66 @@
+name: mas
+services:
+  mas_security_db:
+    image: postgres:latest
+    shm_size: 128mb
+    restart: always
+    ports:
+      - "61007:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 123456
+      POSTGRES_DB: company
+    volumes:
+      - mas_security_db_volume:/var/lib/postgresql
+    networks:
+      - mas
+
+  adminer:
+    image: adminer:latest
+    restart: always
+    ports:
+      - "61080:8080"
+    depends_on:
+      - mas_security_db
+    environment:
+      - ADMINER_DEFAULT_SERVER=mas_security_db
+    networks:
+      - mas
+      
+
+  postgres-mcp:
+    image: crystaldba/postgres-mcp:latest
+    ports:
+      - "61001:8000"
+    environment:
+      DATABASE_URI: "postgres://postgres:123456@mas_security_db:5432/company"
+    command: ["--access-mode=unrestricted", "--transport=sse"]
+    restart: always
+    depends_on:
+      - mas_security_db
+    networks:
+      - mas
+
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: always
+    ports:
+      - "61003:11434"
+    environment:
+      - OLLAMA_ORIGINS=*
+    volumes:
+      - ollama_volume:/root/.ollama/
+    networks:
+      - mas
+    gpus: all
+  
+
+
+volumes:
+  mas_security_db_volume:
+
+networks:
+  mas:
+    external: true
